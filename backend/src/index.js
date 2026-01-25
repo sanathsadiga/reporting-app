@@ -12,6 +12,9 @@ const analyticsRoutes = require('./routes/analytics');
 
 const app = express();
 
+// Trust proxy (IMPORTANT: Required when behind Nginx)
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors({
@@ -39,13 +42,20 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
+// Routes
+app.use('/auth', authRoutes);
+app.use('/users', userRoutes);
+app.use('/submissions', submissionRoutes);
+app.use('/analytics', analyticsRoutes);
+
 // Error handler
 app.use((err, req, res, next) => {
+  console.error('Error:', err.message);
   console.error(err.stack);
   res.status(500).json({ error: 'Internal server error' });
 });
 
-const PORT = process.env.PORT || 5001;
+const PORT = process.env.PORT || 5002;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
 });
