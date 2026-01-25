@@ -32,7 +32,7 @@ const authLimiter = rateLimit({
 });
 
 // Routes
-app.use('/auth', authLimiter, authRoutes);
+app.use('/auth', authRoutes);
 app.use('/users', userRoutes);
 app.use('/submissions', submissionRoutes);
 app.use('/analytics', analyticsRoutes);
@@ -42,11 +42,7 @@ app.get('/health', (req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
-// Routes
-app.use('/auth', authRoutes);
-app.use('/users', userRoutes);
-app.use('/submissions', submissionRoutes);
-app.use('/analytics', analyticsRoutes);
+
 
 // Error handler
 app.use((err, req, res, next) => {
