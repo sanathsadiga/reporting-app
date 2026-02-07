@@ -6,37 +6,71 @@ const { authenticate, requireRole } = require('../middleware/auth');
 
 const router = express.Router();
 
-// Analytics by type
-router.get('/by-type', authenticate, requireRole('admin', 'ceo'), [
-  query('from').optional().isISO8601(),
-  query('to').optional().isISO8601()
-], validate, async (req, res) => {
+const SUBMISSION_TYPES = ['depo', 'vendor', 'dealer', 'stall', 'reader', 'ooh'];
+const getTableName = (type) => `submissions_${type}`;
+
+// Helper to build WHERE clause for date range
+const buildDateClause = (from, to) => {
+  const conditions = [];
+  const params = [];
+  
+  if (from) {
+    conditions.push('submitted_at >= ?');
+    params.push(from);
+  }
+  if (to) {
+    conditions.push('submitted_at <= ?');
+    params.push(to + ' 23:59:59');
+  }
+  
+  return {
+    clause: conditions.length > 0 ? 'WHERE ' + conditions.join(' AND ') : '',
+    params
+  };
+};
+
+// Analytics by type with filters
+router.get('/by-type', authenticate, requireRole('admin', 'ceo'), async (req, res) => {
   try {
-    const { from, to } = req.query;
-    let whereConditions = [];
-    let params = [];
+    const { from, to, area, user } = req.query;
+    
+    const dateClause = buildDateClause(from, to);
+    let params = [...dateClause.params];
 
-    if (from) {
-      whereConditions.push('submitted_at >= ?');
-      params.push(from);
-    }
+    const queries = SUBMISSION_TYPES.map(submissionType => {
+      const tableName = getTableName(submissionType);
+      let conditions = [];
+      let whereIndex = dateClause.params.length;
 
-    if (to) {
-      whereConditions.push('submitted_at <= ?');
-      params.push(to + ' 23:59:59');
-    }
+      if (dateClause.clause) {
+        conditions.push(dateClause.clause);
+      }
 
-    const whereClause = whereConditions.length > 0 
-      ? 'WHERE ' + whereConditions.join(' AND ')
-      : '';
+      if (area) {
+        conditions.push(conditions.length > 0 ? `AND area LIKE ?` : 'WHERE area LIKE ?');
+        params.push(`%${area}%`);
+      }
+
+      if (user) {
+        conditions.push(conditions.length > 0 ? `AND user_id = ?` : 'WHERE user_id = ?');
+        params.push(parseInt(user));
+      }
+
+      const whereClause = conditions.join(' ');
+      return `(SELECT '${submissionType}' as type, COUNT(*) as count FROM ${tableName} ${whereClause})`;
+    });
+
+    // Rebuild params for each query
+    const allParams = [];
+    SUBMISSION_TYPES.forEach(() => {
+      allParams.push(...params);
+    });
 
     const [results] = await pool.execute(
-      `SELECT type, COUNT(*) as count
-       FROM submissions
-       ${whereClause}
-       GROUP BY type
+      `SELECT type, count FROM (${queries.join(' UNION ALL ')}) as data
+       WHERE count > 0
        ORDER BY count DESC`,
-      params
+      allParams
     );
 
     res.json({
@@ -49,40 +83,54 @@ router.get('/by-type', authenticate, requireRole('admin', 'ceo'), [
   }
 });
 
-// Analytics by area
-router.get('/by-area', authenticate, requireRole('admin', 'ceo'), [
-  query('from').optional().isISO8601(),
-  query('to').optional().isISO8601(),
-  query('limit').optional().isInt({ min: 1, max: 50 })
-], validate, async (req, res) => {
+// Analytics by area with filters
+router.get('/by-area', authenticate, requireRole('admin', 'ceo'), async (req, res) => {
   try {
-    const { from, to } = req.query;
-    const limit = parseInt(req.query.limit) || 10;
-    let whereConditions = [];
-    let params = [];
-
-    if (from) {
-      whereConditions.push('submitted_at >= ?');
-      params.push(from);
+    const { from, to, type, user, limit = 10 } = req.query;
+    
+    const dateClause = buildDateClause(from, to);
+    const params = [...dateClause.params];
+    
+    let queries;
+    if (type && SUBMISSION_TYPES.includes(type)) {
+      // Single type
+      const tableName = getTableName(type);
+      let whereConditions = [];
+      
+      if (dateClause.clause) whereConditions.push(dateClause.clause);
+      if (user) {
+        whereConditions.push(whereConditions.length > 0 ? `AND user_id = ?` : 'WHERE user_id = ?');
+        params.push(parseInt(user));
+      }
+      
+      const whereClause = whereConditions.join(' ');
+      queries = [
+        `(SELECT area, COUNT(*) as count FROM ${tableName} ${whereClause} GROUP BY area)`
+      ];
+    } else {
+      // All types
+      queries = SUBMISSION_TYPES.map(submissionType => {
+        const tableName = getTableName(submissionType);
+        let whereConditions = [];
+        
+        if (dateClause.clause) whereConditions.push(dateClause.clause);
+        if (user) {
+          whereConditions.push(whereConditions.length > 0 ? `AND user_id = ?` : 'WHERE user_id = ?');
+        }
+        
+        const whereClause = whereConditions.join(' ');
+        return `(SELECT area, COUNT(*) as count FROM ${tableName} ${whereClause} GROUP BY area)`;
+      });
     }
 
-    if (to) {
-      whereConditions.push('submitted_at <= ?');
-      params.push(to + ' 23:59:59');
-    }
-
-    const whereClause = whereConditions.length > 0 
-      ? 'WHERE ' + whereConditions.join(' AND ')
-      : '';
+    const allParams = type ? params : Array(SUBMISSION_TYPES.length).fill(null).flatMap(() => params);
 
     const [results] = await pool.execute(
-      `SELECT area, COUNT(*) as count
-       FROM submissions
-       ${whereClause}
+      `SELECT area, SUM(count) as count FROM (${queries.join(' UNION ALL ')}) as data
        GROUP BY area
        ORDER BY count DESC
-       LIMIT ?`,
-      [...params, String(limit)]
+       LIMIT ${parseInt(limit)}`,
+      allParams
     );
 
     res.json({
@@ -95,45 +143,62 @@ router.get('/by-area', authenticate, requireRole('admin', 'ceo'), [
   }
 });
 
-// Analytics by user
-router.get('/by-user', authenticate, requireRole('admin', 'ceo'), [
-  query('from').optional().isISO8601(),
-  query('to').optional().isISO8601(),
-  query('limit').optional().isInt({ min: 1, max: 50 })
-], validate, async (req, res) => {
+// Analytics by user with filters
+router.get('/by-user', authenticate, requireRole('admin', 'ceo'), async (req, res) => {
   try {
-    const { from, to } = req.query;
-    const limit = parseInt(req.query.limit) || 10;
-    let whereConditions = [];
-    let params = [];
+    const { from, to, type, area, limit = 10 } = req.query;
+    
+    const dateClause = buildDateClause(from, to);
+    const params = [...dateClause.params];
 
-    if (from) {
-      whereConditions.push('s.submitted_at >= ?');
-      params.push(from);
+    let queries;
+    if (type && SUBMISSION_TYPES.includes(type)) {
+      const tableName = getTableName(type);
+      let whereConditions = [];
+      
+      if (dateClause.clause) whereConditions.push(dateClause.clause);
+      if (area) {
+        whereConditions.push(whereConditions.length > 0 ? `AND s.area LIKE ?` : 'WHERE s.area LIKE ?');
+        params.push(`%${area}%`);
+      }
+      
+      const whereClause = whereConditions.join(' ');
+      queries = [
+        `(SELECT s.user_id, u.email, COUNT(*) as count FROM ${tableName} s
+          LEFT JOIN users u ON s.user_id = u.id
+          ${whereClause}
+          GROUP BY s.user_id, u.email)`
+      ];
+    } else {
+      queries = SUBMISSION_TYPES.map(submissionType => {
+        const tableName = getTableName(submissionType);
+        let whereConditions = [];
+        
+        if (dateClause.clause) whereConditions.push(dateClause.clause);
+        if (area) {
+          whereConditions.push(whereConditions.length > 0 ? `AND s.area LIKE ?` : 'WHERE s.area LIKE ?');
+        }
+        
+        const whereClause = whereConditions.join(' ');
+        return `(SELECT s.user_id, u.email, COUNT(*) as count FROM ${tableName} s
+                 LEFT JOIN users u ON s.user_id = u.id
+                 ${whereClause}
+                 GROUP BY s.user_id, u.email)`;
+      });
     }
 
-    if (to) {
-      whereConditions.push('s.submitted_at <= ?');
-      params.push(to + ' 23:59:59');
-    }
-
-    const whereClause = whereConditions.length > 0 
-      ? 'WHERE ' + whereConditions.join(' AND ')
-      : '';
+    const allParams = type ? params : Array(SUBMISSION_TYPES.length).fill(null).flatMap(() => params);
 
     const [results] = await pool.execute(
-      `SELECT u.email, COUNT(*) as count
-       FROM submissions s
-       JOIN users u ON s.user_id = u.id
-       ${whereClause}
-       GROUP BY s.user_id, u.email
+      `SELECT email, SUM(count) as count FROM (${queries.join(' UNION ALL ')}) as data
+       GROUP BY email
        ORDER BY count DESC
-       LIMIT ?`,
-      [...params, String(limit)]
+       LIMIT ${parseInt(limit)}`,
+      allParams
     );
 
     res.json({
-      labels: results.map(r => r.email),
+      labels: results.map(r => r.email || 'Unknown'),
       data: results.map(r => r.count)
     });
   } catch (error) {
@@ -142,25 +207,64 @@ router.get('/by-user', authenticate, requireRole('admin', 'ceo'), [
   }
 });
 
-// Analytics by month
-router.get('/by-month', authenticate, requireRole('admin', 'ceo'), [
-  query('year').optional().isInt({ min: 2020, max: 2100 })
-], validate, async (req, res) => {
+// Analytics by month with filters
+router.get('/by-month', authenticate, requireRole('admin', 'ceo'), async (req, res) => {
   try {
-    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const { year, type, area, user } = req.query;
+    const selectedYear = parseInt(year) || new Date().getFullYear();
+
+    let queries;
+    let params = [selectedYear];
+
+    if (type && SUBMISSION_TYPES.includes(type)) {
+      const tableName = getTableName(type);
+      let whereConditions = ['YEAR(submitted_at) = ?'];
+      
+      if (area) {
+        whereConditions.push('area LIKE ?');
+        params.push(`%${area}%`);
+      }
+      if (user) {
+        whereConditions.push('user_id = ?');
+        params.push(parseInt(user));
+      }
+      
+      const whereClause = whereConditions.join(' AND ');
+      queries = [
+        `(SELECT MONTH(submitted_at) as month, COUNT(*) as count FROM ${tableName}
+          WHERE ${whereClause}
+          GROUP BY MONTH(submitted_at))`
+      ];
+    } else {
+      queries = SUBMISSION_TYPES.map(submissionType => {
+        const tableName = getTableName(submissionType);
+        let whereConditions = ['YEAR(submitted_at) = ?'];
+        
+        if (area) whereConditions.push('area LIKE ?');
+        if (user) whereConditions.push('user_id = ?');
+        
+        const whereClause = whereConditions.join(' AND ');
+        return `(SELECT MONTH(submitted_at) as month, COUNT(*) as count FROM ${tableName}
+                 WHERE ${whereClause}
+                 GROUP BY MONTH(submitted_at))`;
+      });
+    }
+
+    const allParams = type 
+      ? params 
+      : SUBMISSION_TYPES.map(() => selectedYear).concat(
+          Array(SUBMISSION_TYPES.length).fill(null).flatMap(() => 
+            params.slice(1)
+          )
+        );
 
     const [results] = await pool.execute(
-      `SELECT 
-         MONTH(submitted_at) as month,
-         COUNT(*) as count
-       FROM submissions
-       WHERE YEAR(submitted_at) = ?
-       GROUP BY MONTH(submitted_at)
+      `SELECT month, SUM(count) as count FROM (${queries.join(' UNION ALL ')}) as data
+       GROUP BY month
        ORDER BY month`,
-      [year]
+      allParams
     );
 
-    // Fill in missing months with 0
     const monthNames = [
       'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
       'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
@@ -174,7 +278,7 @@ router.get('/by-month', authenticate, requireRole('admin', 'ceo'), [
     res.json({
       labels: monthNames,
       data,
-      year
+      year: selectedYear
     });
   } catch (error) {
     console.error('Analytics by month error:', error);
@@ -182,32 +286,58 @@ router.get('/by-month', authenticate, requireRole('admin', 'ceo'), [
   }
 });
 
-// Summary stats
+// Summary stats with filters
 router.get('/summary', authenticate, requireRole('admin', 'ceo'), async (req, res) => {
   try {
-    const [totalSubmissions] = await pool.execute(
-      'SELECT COUNT(*) as count FROM submissions'
+    const { from, to, type, area } = req.query;
+    
+    const dateClause = buildDateClause(from, to);
+    const params = [...dateClause.params];
+
+    let submissionQueries;
+    let whereCondition = dateClause.clause;
+
+    if (type && SUBMISSION_TYPES.includes(type)) {
+      const tableName = getTableName(type);
+      if (area) {
+        whereCondition = whereCondition 
+          ? `${whereCondition} AND area LIKE ?`
+          : 'WHERE area LIKE ?';
+        params.push(`%${area}%`);
+      }
+      submissionQueries = [
+        `(SELECT COUNT(*) as count FROM ${tableName} ${whereCondition})`
+      ];
+    } else {
+      submissionQueries = SUBMISSION_TYPES.map(submissionType => {
+        const tableName = getTableName(submissionType);
+        let condition = whereCondition;
+        if (area) {
+          condition = condition
+            ? `${condition} AND area LIKE ?`
+            : 'WHERE area LIKE ?';
+        }
+        return `(SELECT COUNT(*) as count FROM ${tableName} ${condition})`;
+      });
+    }
+
+    const allParams = type
+      ? params
+      : SUBMISSION_TYPES.map(() => 1).flatMap(() => params);
+
+    const [totalResults] = await pool.execute(
+      `SELECT SUM(count) as total FROM (${submissionQueries.join(' UNION ALL ')}) as subs`,
+      allParams
     );
 
     const [totalUsers] = await pool.execute(
       'SELECT COUNT(*) as count FROM users WHERE role = "user"'
     );
 
-    const [todaySubmissions] = await pool.execute(
-      'SELECT COUNT(*) as count FROM submissions WHERE DATE(submitted_at) = CURDATE()'
-    );
-
-    const [thisMonthSubmissions] = await pool.execute(
-      `SELECT COUNT(*) as count FROM submissions 
-       WHERE MONTH(submitted_at) = MONTH(CURDATE()) 
-       AND YEAR(submitted_at) = YEAR(CURDATE())`
-    );
-
     res.json({
-      totalSubmissions: totalSubmissions[0].count,
+      totalSubmissions: totalResults[0].total || 0,
       totalUsers: totalUsers[0].count,
-      todaySubmissions: todaySubmissions[0].count,
-      thisMonthSubmissions: thisMonthSubmissions[0].count
+      activeTypes: SUBMISSION_TYPES.length
     });
   } catch (error) {
     console.error('Analytics summary error:', error);

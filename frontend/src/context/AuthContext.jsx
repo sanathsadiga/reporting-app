@@ -1,65 +1,84 @@
 import { createContext, useContext, useState, useEffect } from 'react';
-import { authService } from '../services/auth';
+import api from '../services/api';
 
-const AuthContext = createContext(null);
+const AuthContext = createContext();
+
+export const useAuth = () => {
+  const context = useContext(AuthContext);
+  if (!context) {
+    throw new Error('useAuth must be used within AuthProvider');
+  }
+  return context;
+};
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
   const [loading, setLoading] = useState(true);
 
+  // Check if user is logged in on mount
   useEffect(() => {
-    checkAuth();
+    const token = localStorage.getItem('accessToken');
+    if (token) {
+      fetchUserProfile();
+    } else {
+      setLoading(false);
+    }
   }, []);
 
-  const checkAuth = async () => {
-    const token = localStorage.getItem('accessToken');
-    if (!token) {
-      setLoading(false);
-      return;
-    }
+  // Refresh token every 10 minutes
+  useEffect(() => {
+    if (!user) return;
 
-    try {
-      const userData = await authService.getProfile();
-      setUser(userData);
-    } catch (error) {
-      // Try to refresh token
+    const interval = setInterval(async () => {
       try {
-        const refreshData = await authService.refreshToken();
-        setUser(refreshData.user);
-      } catch (refreshError) {
-        localStorage.removeItem('accessToken');
+        const response = await api.post('/auth/refresh');
+        localStorage.setItem('accessToken', response.data.accessToken);
+      } catch (error) {
+        console.error('Token refresh failed:', error);
+        logout();
       }
+    }, 10 * 60 * 1000); // 10 minutes
+
+    return () => clearInterval(interval);
+  }, [user]);
+
+  const fetchUserProfile = async () => {
+    try {
+      const response = await api.get('/auth/me');
+      setUser(response.data);
+    } catch (error) {
+      console.error('Failed to fetch user profile:', error);
+      localStorage.removeItem('accessToken');
+      setUser(null);
     } finally {
       setLoading(false);
     }
   };
 
   const login = async (email, password) => {
-    const data = await authService.login(email, password);
-    setUser(data.user);
-    return data;
+    const response = await api.post('/auth/login', { email, password });
+    const { accessToken, user: userData } = response.data;
+    
+    localStorage.setItem('accessToken', accessToken);
+    setUser(userData);
+    
+    return userData;
   };
 
   const logout = async () => {
-    await authService.logout();
-    setUser(null);
-  };
-
-  const updateUser = (updates) => {
-    setUser(prev => ({ ...prev, ...updates }));
+    try {
+      await api.post('/auth/logout');
+    } catch (error) {
+      console.error('Logout error:', error);
+    } finally {
+      localStorage.removeItem('accessToken');
+      setUser(null);
+    }
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, logout, updateUser, checkAuth }}>
+    <AuthContext.Provider value={{ user, loading, login, logout, fetchUserProfile }}>
       {children}
     </AuthContext.Provider>
   );
-}
-
-export function useAuth() {
-  const context = useContext(AuthContext);
-  if (!context) {
-    throw new Error('useAuth must be used within an AuthProvider');
-  }
-  return context;
 }

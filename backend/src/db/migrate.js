@@ -46,25 +46,112 @@ async function migrate() {
   `);
   console.log('✓ Users table created');
 
-  // Create submissions table
+  // Create submissions_depo table
   await connection.execute(`
-    CREATE TABLE IF NOT EXISTS submissions (
+    CREATE TABLE IF NOT EXISTS submissions_depo (
       id INT AUTO_INCREMENT PRIMARY KEY,
       user_id INT NOT NULL,
-      type ENUM('depo', 'vendor', 'dealer', 'stall', 'reader', 'ooh') NOT NULL,
       area TEXT NOT NULL,
       person_met TEXT NOT NULL,
       accompanied_by TEXT,
-      insights TEXT,
-      campaign TEXT,
+      competition_activity TEXT,
       discussion TEXT,
       outcome TEXT,
-      phone VARCHAR(20) NULL,
       submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
     )
   `);
-  console.log('✓ Submissions table created');
+  console.log('✓ Submissions Depo table created');
+
+  // Create submissions_vendor table
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS submissions_vendor (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      area TEXT NOT NULL,
+      vendor_name TEXT NOT NULL,
+      phone VARCHAR(20) NOT NULL,
+      accompanied_by TEXT,
+      outcome TEXT,
+      submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  console.log('✓ Submissions Vendor table created');
+
+  // Create submissions_dealer table
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS submissions_dealer (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      area TEXT NOT NULL,
+      dealer_name TEXT NOT NULL,
+      accompanied_by TEXT,
+      dues_amount DECIMAL(10, 2),
+      collection_mode VARCHAR(50),
+      collection_amount DECIMAL(10, 2),
+      outstanding DECIMAL(10, 2) GENERATED ALWAYS AS (IFNULL(dues_amount, 0) - IFNULL(collection_amount, 0)) STORED,
+      competition_newspapers JSON,
+      discussion TEXT,
+      outcome TEXT,
+      submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  console.log('✓ Submissions Dealer table created');
+
+  // Create submissions_stall table
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS submissions_stall (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      area TEXT NOT NULL,
+      stall_owner TEXT NOT NULL,
+      accompanied_by TEXT,
+      dues_amount DECIMAL(10, 2),
+      collection_mode VARCHAR(50),
+      collection_amount DECIMAL(10, 2),
+      outstanding DECIMAL(10, 2) GENERATED ALWAYS AS (IFNULL(dues_amount, 0) - IFNULL(collection_amount, 0)) STORED,
+      competition_newspapers JSON,
+      discussion TEXT,
+      outcome TEXT,
+      submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  console.log('✓ Submissions Stall table created');
+
+  // Create submissions_reader table
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS submissions_reader (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      area TEXT NOT NULL,
+      reader_name TEXT NOT NULL,
+      contact_details TEXT NOT NULL,
+      present_reading JSON,
+      readers_feedback TEXT,
+      submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  console.log('✓ Submissions Reader table created');
+
+  // Create submissions_ooh table
+  await connection.execute(`
+    CREATE TABLE IF NOT EXISTS submissions_ooh (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      user_id INT NOT NULL,
+      area TEXT NOT NULL,
+      segment VARCHAR(100) NOT NULL,
+      contact_person TEXT NOT NULL,
+      existing_newspaper JSON,
+      feedback_suggestion TEXT,
+      submitted_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+    )
+  `);
+  console.log('✓ Submissions OOH table created');
 
   // Create audit_logs table
   await connection.execute(`
